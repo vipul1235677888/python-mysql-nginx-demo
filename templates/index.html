@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+  <section class="page-header">
+    <div>
+      <p class="eyebrow">Overview</p>
+      <h1>Project Dashboard</h1>
+    </div>
+    <a class="button primary" href="{{ url_for('add_project') }}">+ Add Project</a>
+  </section>
+
+  <section class="stats-grid">
+    <div class="stat-card">
+      <span>Total</span>
+      <strong>{{ projects|length }}</strong>
+    </div>
+    <div class="stat-card">
+      <span>Open</span>
+      <strong>{{ projects|selectattr('status', 'equalto', 'Open')|list|length }}</strong>
+    </div>
+    <div class="stat-card">
+      <span>In Progress</span>
+      <strong>{{ projects|selectattr('status', 'equalto', 'In Progress')|list|length }}</strong>
+    </div>
+    <div class="stat-card">
+      <span>Completed</span>
+      <strong>{{ projects|selectattr('status', 'equalto', 'Completed')|list|length }}</strong>
+    </div>
+  </section>
+
+  <section class="grid">
+    {% for project in projects %}
+      <article class="card">
+        <div class="card-header">
+          <h3>{{ project.title }}</h3>
+          <span class="tag {{ project.status|replace(' ', '-')|lower }}">{{ project.status }}</span>
+        </div>
+        <p>{{ project.description or 'No description added yet.' }}</p>
+        <div class="meta">
+          <span>Created: {{ project.created_at.strftime('%Y-%m-%d') }}</span>
+          <form action="{{ url_for('delete_project', project_id=project.id) }}" method="post">
+            <button type="submit" class="delete-btn">Delete</button>
+          </form>
+        </div>
+      </article>
+    {% else %}
+      <div class="empty-state">
+        <h3>No projects available</h3>
+        <p>Create your first project to get started.</p>
+      </div>
+    {% endfor %}
+  </section>
+{% endblock %}
