@@ -9,7 +9,7 @@ set -Eeuo pipefail
 
 # -------- PROJECT CONFIGURATION --------
 
-APP_DIR="/var/www/python-project/pythonmy-mysql-nginx-demo"
+APP_DIR="/var/www/python-project/python-mysql-nginx-demo"
 BRANCH="main"
 SERVICE_NAME="python-project"
 VENV_DIR="$APP_DIR/venv"
