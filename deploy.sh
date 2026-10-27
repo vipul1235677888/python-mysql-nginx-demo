@@ -1,21 +1,28 @@
+```bash
 #!/usr/bin/env bash
 
 set -Eeuo pipefail
 
 # ==========================================
-# PYTHON PROJECT DEPLOYMENT SCRIPT
-# Ubuntu + Nginx + Gunicorn + GitHub
+# FLASK + MYSQL PROJECT DEPLOYMENT
+# Ubuntu + GitHub + Gunicorn + Nginx
 # ==========================================
 
-# -------- PROJECT CONFIGURATION --------
-
-APP_DIR="/var/www/python-project/python-mysql-nginx-demo"
+REPO_URL="https://github.com/vipul1235677888/python-mysql-nginx-demo.git"
 BRANCH="main"
-SERVICE_NAME="python-project"
-VENV_DIR="$APP_DIR/venv"
-REQUIREMENTS_FILE="$APP_DIR/requirements.txt"
 
-# -------- LOGGING --------
+BASE_DIR="/var/www/python-project"
+APP_NAME="python-mysql-nginx-demo"
+APP_DIR="$BASE_DIR/$APP_NAME"
+
+SERVICE_NAME="python-mysql-nginx-demo"
+VENV_DIR="$APP_DIR/venv"
+
+PORT="8000"
+NGINX_CONF="/etc/nginx/sites-available/$SERVICE_NAME"
+
+APP_USER="$(id -un)"
+APP_GROUP="$(id -gn)"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -26,102 +33,177 @@ fail() {
     exit 1
 }
 
-# -------- ERROR HANDLING --------
-
-trap 'fail "Deployment failed near line $LINENO. Check the logs above."' ERR
-
-# -------- VALIDATE USER --------
-
+# Prevent running as root directly.
 if [[ "$EUID" -eq 0 ]]; then
-    fail "Do not run this script using sudo. Run it as the project owner."
+    fail "Run this script as your normal Ubuntu user, without sudo."
 fi
 
-# -------- CHECK PROJECT DIRECTORY --------
+command -v sudo >/dev/null 2>&1 || fail "sudo is not installed."
 
-[[ -d "$APP_DIR" ]] || fail "Project directory not found: $APP_DIR"
+# ------------------------------------------
+# 1. Check required system packages
+# ------------------------------------------
+
+for cmd in git python3 nginx; do
+    command -v "$cmd" >/dev/null 2>&1 ||
+        fail "$cmd is missing. Install it before deploying."
+done
+
+# ------------------------------------------
+# 2. Clone repository or update existing code
+# ------------------------------------------
+
+mkdir -p "$BASE_DIR"
+
+if [[ ! -d "$APP_DIR/.git" ]]; then
+
+    if [[ -e "$APP_DIR" ]]; then
+        fail "$APP_DIR exists but is not a Git repository."
+    fi
+
+    log "Cloning GitHub repository..."
+
+    git clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
+
+else
+
+    log "Updating existing repository..."
+
+    git -C "$APP_DIR" fetch origin "$BRANCH"
+
+    git -C "$APP_DIR" pull --ff-only origin "$BRANCH"
+
+fi
 
 cd "$APP_DIR"
 
-log "Starting deployment..."
+# ------------------------------------------
+# 3. Verify Flask application entry point
+# ------------------------------------------
 
-# -------- CHECK GIT --------
+[[ -f "$APP_DIR/app.py" ]] ||
+    fail "app.py not found. Check the project entry point."
 
-command -v git >/dev/null 2>&1 || fail "Git is not installed."
+[[ -f "$APP_DIR/requirements.txt" ]] ||
+    log "WARNING: requirements.txt not found."
 
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-    || fail "This directory is not a Git repository."
+# ------------------------------------------
+# 4. Create virtual environment
+# ------------------------------------------
 
-# -------- CHECK REQUIRED FILES --------
-
-[[ -f "$REQUIREMENTS_FILE" ]] \
-    || fail "requirements.txt not found."
-
-[[ -x "$VENV_DIR/bin/python" ]] \
-    || fail "Virtual environment not found. Create it first."
-
-[[ -x "$VENV_DIR/bin/pip" ]] \
-    || fail "pip not found in the virtual environment."
-
-# -------- CHECK WORKING TREE --------
-
-if [[ -n "$(git status --porcelain)" ]]; then
-    fail "Uncommitted changes detected. Commit, stash, or safely resolve them first."
+if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+    log "Creating Python virtual environment..."
+    python3 -m venv "$VENV_DIR"
 fi
-
-# -------- FETCH GITHUB CHANGES --------
-
-log "Fetching latest code from GitHub..."
-
-git fetch origin "$BRANCH"
-
-# -------- VERIFY REMOTE BRANCH --------
-
-git show-ref --verify --quiet "refs/remotes/origin/$BRANCH" \
-    || fail "Remote branch origin/$BRANCH was not found."
-
-# -------- UPDATE APPLICATION CODE --------
-
-log "Updating project from branch $BRANCH..."
-
-git pull --ff-only origin "$BRANCH"
-
-# -------- INSTALL DEPENDENCIES --------
 
 log "Installing Python dependencies..."
 
-"$VENV_DIR/bin/python" -m pip install \
-    -r "$REQUIREMENTS_FILE"
+"$VENV_DIR/bin/python" -m pip install --upgrade pip
 
-# -------- CHECK PYTHON SYNTAX --------
-
-log "Checking Python syntax..."
-
-"$VENV_DIR/bin/python" -m compileall -q \
-    -x '(^|/)(venv|\.git|__pycache__)(/|$)' \
-    "$APP_DIR"
-
-# -------- RESTART APPLICATION --------
-
-log "Restarting application service..."
-
-sudo -n /usr/bin/systemctl restart "$SERVICE_NAME"
-
-# -------- VERIFY APPLICATION --------
-
-if ! sudo -n /usr/bin/systemctl is-active --quiet "$SERVICE_NAME"; then
-    sudo /usr/bin/systemctl status "$SERVICE_NAME" --no-pager || true
-    fail "Application service did not start successfully."
+if [[ -f "$APP_DIR/requirements.txt" ]]; then
+    "$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"
 fi
 
-# -------- CHECK NGINX --------
+# Ensure production server and Flask are available.
+"$VENV_DIR/bin/pip" install gunicorn flask
 
-if ! sudo -n /usr/sbin/nginx -t; then
-    fail "Nginx configuration test failed."
+# ------------------------------------------
+# 5. Configure systemd service
+# ------------------------------------------
+
+log "Creating systemd service..."
+
+sudo tee "/etc/systemd/system/$SERVICE_NAME.service" >/dev/null <<EOF
+[Unit]
+Description=Flask application - $APP_NAME
+After=network.target mysql.service mariadb.service
+
+[Service]
+User=$APP_USER
+Group=$APP_GROUP
+WorkingDirectory=$APP_DIR
+Environment="PATH=$VENV_DIR/bin"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind 127.0.0.1:$PORT app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# ------------------------------------------
+# 6. Configure Nginx reverse proxy
+# ------------------------------------------
+
+log "Creating Nginx configuration..."
+
+sudo tee "$NGINX_CONF" >/dev/null <<EOF
+server {
+    listen 80;
+    server_name 160.187.87.43;
+
+    location / {
+        proxy_pass http://127.0.0.1:$PORT;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+
+sudo ln -sfn "$NGINX_CONF" \
+    "/etc/nginx/sites-enabled/$SERVICE_NAME"
+
+# ------------------------------------------
+# 7. Validate Nginx configuration
+# ------------------------------------------
+
+sudo nginx -t || fail "Nginx configuration test failed."
+
+# ------------------------------------------
+# 8. Start/restart application
+# ------------------------------------------
+
+log "Starting application service..."
+
+sudo systemctl daemon-reload
+sudo systemctl enable "$SERVICE_NAME"
+sudo systemctl restart "$SERVICE_NAME"
+
+sudo systemctl enable nginx
+sudo systemctl reload nginx
+
+# ------------------------------------------
+# 9. Show deployment status
+# ------------------------------------------
+
+log "Checking application service..."
+
+if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+    log "Application service is running."
+else
+    log "Application service failed to start."
+    sudo journalctl -u "$SERVICE_NAME" -n 50 --no-pager
+    fail "Deployment failed. Check application and database configuration."
 fi
 
-# -------- COMPLETED --------
+log "Testing local application endpoint..."
 
-log "Deployment completed successfully."
-log "Service: $SERVICE_NAME"
-log "Branch: $BRANCH"
-log "Check your website to verify the changes."
+if ! curl -fsS --max-time 10 \
+    "http://127.0.0.1:$PORT/" >/dev/null; then
+    log "WARNING: HTTP health check failed."
+    log "Check application routes and database connectivity."
+fi
+
+echo
+echo "=========================================="
+echo "DEPLOYMENT FINISHED"
+echo "=========================================="
+echo "Application: $APP_NAME"
+echo "Server IP:   160.187.87.43"
+echo "Website:     http://160.187.87.43"
+echo "Service:     $SERVICE_NAME"
+echo "=========================================="
+```
