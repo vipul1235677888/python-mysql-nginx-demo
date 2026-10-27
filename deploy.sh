@@ -1,4 +1,4 @@
-```bash
+bash
 #!/usr/bin/env bash
 
 set -Eeuo pipefail
@@ -206,4 +206,3 @@ echo "Server IP:   160.187.87.43"
 echo "Website:     http://160.187.87.43"
 echo "Service:     $SERVICE_NAME"
 echo "=========================================="
-```
